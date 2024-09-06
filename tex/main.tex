@@ -1,0 +1,101 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{graphicx} % Required for inserting images
+\usepackage[margin=25mm]{geometry}
+\parskip 4.2pt  % Set spacing between paragraphs
+\parindent 8.4pt  % Set leading space for paragraphs
+\usepackage[font=sf]{caption} % Change font of captions
+\usepackage{tocloft} % Reduce table of contents line spacing
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{siunitx}
+\usepackage{verbatim}
+\usepackage{hyperref} % Required for inserting clickable links
+\usepackage{natbib} % Required for APA-style citations
+\usepackage{comment}
+\usepackage{wrapfig}
+\usepackage{xcolor}
+
+\definecolor{materialgreen}{RGB}{76, 175, 80}
+\newcommand{\notetp}[1]
+	{{\color{materialgreen}[[{\bf Thomas:} #1]]}}
+
+\title
+{
+    \textbf{CPSC436A Final Report}
+    \\
+    \large{\textbf{Filling Barrelfish with Chum}}
+}
+\author
+{
+    {\rm Adrian Pikor}\\\textit{University of British Columbia}
+    \and
+    {\rm Arya Stevinson}\\\textit{University of British Columbia}
+    \and
+    {\rm Linh Pham}\\\textit{University of British Columbia}
+    \and
+    {\rm Mathew Balsdon}\\\textit{University of British Columbia}
+}
+
+\begin{document}
+\captionsetup[figure]{skip=0pt}
+\maketitle
+\newpage
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+\input{sections/intro}
+\newpage
+
+\section{Memory Management}
+\input{sections/m1}
+\newpage
+
+\section{Virtual Memory System}\label{M2}
+\input{sections/m2}
+\newpage
+
+\section{Spawning Processes}
+\input{sections/m3}
+\newpage
+
+\section{Message Passing}
+\input{sections/m4}
+\newpage
+
+\section{Multicore Support}
+\input{sections/m5}
+\newpage
+
+\section{Cross-Core Message Passing}
+\input{sections/m6}
+\newpage
+
+\section{Networking}
+\input{sections/m7-adrian}
+\newpage
+
+\section{Capabilities, Revisited}
+\input{sections/m7-arya}
+\newpage
+
+\section{Shell}
+\input{sections/m7-linh}
+\newpage
+
+\section{Nameserver}
+\input{sections/m7-mathew}
+\newpage
+
+\section{Conclusion}
+\input{sections/conclusion}
+\newpage
+
+\bibliographystyle{plain}
+\bibliography{bibliography}
+
+\end{document}

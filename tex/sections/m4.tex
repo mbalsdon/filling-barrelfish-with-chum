@@ -1,0 +1,82 @@
+As of Milestone 3, our operating system now has access to a fully-fledged memory management system and also supports the spawning and management of arbitrary processes. There still however remains the issue of how processes \textit{talk} to each other. Take for instance our process manager (which currently runs inside the \texttt{init} process). If some arbitrary process \textbf{A} wanted to wait on the execution state of another process \textbf{B}, it would need to query \texttt{init} on the state of \textbf{B} in order to do so. Ideally, we would also in the future like to separate services out from \texttt{init} such that the operating system's architecture resembles something more service-oriented. That is, we would have the physical memory manager, process manager, \texttt{init}, etc. all running as their own separate processes. How might they communicate with each other? In this Milestone, we implement remote procedure calls through LMP.
+
+\subsection{Design Constraints}
+At a high level, a remote procedure call (RPC) is just as the name suggests. It is a function that lives outside of the scope of the calling process (in our case, it lives inside another process on the machine). Obviously this requires some sort of communication; both processes need to agree on how the RPC call is invoked, what the parameters look like, what the possible return values look like, as well as how all of that data is organized when being sent through the underlying transport layer (in other words, they need to agree on protocol). In practice, this looks like:
+\begin{itemize}[itemsep=0pt]
+    \item The client invokes a local RPC stub, which: \begin{enumerate}[itemsep=0pt]
+        \item Marshals any provided arguments into a buffer.
+        \item Sends this buffer over the underlying communication medium.
+    \end{enumerate}
+    \item The server receives the buffer, and: \begin{enumerate}[itemsep=0pt]
+        \item Parses out which procedure is to be called.
+        \item Unmarshals any provided arguments.
+        \item Calls the procedure with the provided arguments.
+        \item Marshals any return values into a buffer.
+        \item Sends this buffer back over the communication medium.
+    \end{enumerate}
+    \item The client receives the buffer, and: \begin{enumerate}[itemsep=0pt]
+        \item Unmarshals the return values from the buffer.
+        \item Returns these values back to client through the stub.
+    \end{enumerate}
+\end{itemize}
+The RPC calls we set out to implement in this Milestone were those for memory management, process management, and terminal support. All calls were done using ``lightweight message passing" (LMP) for transport, which is a non-blocking, event-driven interface that allows us to send small payloads between processes on a single core. It can be thought of as loosely analagous to a transport layer protocol. Communication happens over a ``channel", which consists of two processes holding a capability to the other's endpoint. The big challenges for this Milestone were:
+\begin{enumerate}[itemsep=0pt]
+    \item How does a process find a server (e.g. whoever is handling memory requests) in the first place?
+    \item Do we want all communication happening over one channel, or multiple? When should these channels open/close?
+    \item Since LMP only provides us with raw payload exchanges, how do we pack our messages so that servers know what RPC is being invoked and what the arguments are? How do we pack our messages so that clients can retrieve return values and/or know the status of their calls? It would be preferable to build this in a way that supports any underlying transport layer (not just LMP).
+    \item How do we send/receive messages that are larger than what LMP supports (in one send)?
+\end{enumerate}
+There are many degrees of freedom here. In contrast to past Milestones however, we were mostly concerned with designs that were simple, extensible, and isolated. Since Barrelfish supports other methods of communication (see Milestone 6), we wanted our messaging layer to not have to \textit{know} that it was using LMP. We also wanted it to be easy to do something like add new servers and RPC calls, since memory/process/terminal servers are certainly not the only things a complete OS may run.
+
+\subsection{Binding}
+If a process $A$ wants to send an RPC to process $B$, it uses an endpoint. Simply put, endpoints are capabilities to parts of a process' memory used for IPC. When $A$ sends a message to $B$, it sends it using its remote endpoint ($B$'s local endpoint). When $A$ wants to receive a message from $B$, it listens for it using its local endpoint ($B$'s remote endpoint). This is fine, however we still need to get $A$ and $B$ to give each other their endpoints in the first place, otherwise they won't know where to send messages. In other words, we need them to ``bind" to each other. Since we don't have a nameserver running (yet), this Milestone requires some amount of hardcoding in order to give processes knowledge of the available servers.
+\\\\
+We decided to put all functionality for this Milestone into \texttt{init}, so in effect we have a single process serving all RPC requests (explanation for this choice is explained later). The way processes bind to \texttt{init}, then, is as follows:
+\begin{enumerate}[itemsep=0pt]
+    \item When \texttt{init} spawns a child process, it puts its self-endpoint into a well-known place in the child's CSpace.
+    \item When the child process starts, it creates a ``self-endpoint" and stores it in a well-known place in its CSpace. The endpoint refers to itself. Since it has \texttt{init}'s endpoint (the remote)  from the spawning process and its self-endpoint (the local), it creates a channel between the two.
+    \item The child process sends its self-endpoint to \texttt{init} using the channel, allowing \texttt{init} to build its side of the channel.
+\end{enumerate}
+
+\subsection{Exchanging Messages}
+\subsubsection{Messaging Layer}
+Since LMP only gives us the ability to send raw buffers of data, we need syntax and semantics for our messages in order to know what RPCs are being invoked, as well as the arguments being provided. We also need this in order to retrieve return values, and to know \textit{if} and \textit{when} our requests have been served. LMP supports a maximum payload size of 8 words and 1 capability reference. Our messages are packed as follows:
+\begin{itemize}[itemsep=0pt]
+    \item 0: Message Type - specifies what kind of message is being sent. This encapsulates both request and response messages.
+    \item 1: Thread ID - specifies the ID of the calling thread. This is necessary since multiple messages can be in-flight at once, so we need a way to identify \textit{who} has made the request to return the response to.
+    \item 2: Result - specifies the error/OK response resultant after serving a request. This field is only interesting for callers when they receive a response.
+    \item 3-7: Arguments - contains parameters if the message is a request, or return values if the message is a response.
+    \item Capability - sometimes we need to send or receive a capability (for example when requesting memory, or during binding). If not, then this is set to \texttt{NULL}.
+\end{itemize}
+
+\subsubsection{Thread Multiplexing}
+LMP is non-blocking and event-driven. This means that when we call an LMP function we need to provide it with a callback, which will execute at an indiscriminate time in the future when the call is processed. Programmatically, the function itself returns immediately. Assuming the call is made on thread $A$, we handle cases where we need to block on a response as follows:
+\begin{enumerate}[itemsep=0pt]
+    \item Thread $A$ creates a ``message loop", thread $B$, which will continue to receive messages (and execute their callbacks) on the channel while $A$ waits for the response its interested in.
+    \item Thread $A$ sends its request and begins blocking on a semaphore. We use a semaphore because, under low system load, the response to our request may be received before we even need to start blocking the thread.
+    \item When the response comes, thread $B$ executes the associated callback, which posts to $A$'s semaphore and thus unblocks it.
+    \item Thread $A$ reads the response and continues as usual.
+\end{enumerate}
+Note the necessity of the message loop. Since the caller needs to block when waiting for a response, something still needs to be running in order to unblock it when the response comes. The message loop waits on a ``waitset", which is an event queue, and dispatches events as they arrive. Dispatching an event triggers a closure registered with the waitset, and it is in this closure that we decide which thread to unblock based on the thread ID in the message.
+%The same functionality can be achieved using a ``waitset", which we explore in depth during Milestone 6. The library for these was pre-provided and would have arguably been a cleaner way to handle message passing, but due to time constraints we were not able to figure out how they worked. We instead opted for a more familiar route (and ironically ended up with a partial re-implementation of waitsets).
+
+\subsection{Servers}
+All RPCs are handled through a connection to \texttt{init}. In effect, it serves as the memory, process, and terminal server all at once. Basic coding practices say that a separation of concerns would have been better here, however we once again made this decision due to time constraints. The issue is consequently handled in Milestone 7 with the introduction of a nameserver. If we had done it in this Milestone however, the binding process would have been replicated for each server by defining well-known capability slots and handing them off to any spawned processes. Each server would be connected separately to bound processes, and only know about a partial set of the RPCs we implemented (everything would still go through the messaging layer and LMP).
+\\\\
+Implementation here was relatively straightforward since we already had all of the pieces for memory management, process management, and terminal reads/writes. We just had to integrate it with our communication subsystem.
+
+\subsubsection{Memory Server}
+The memory server (\texttt{init}, in reality) allows clients to request RAM capabilities. This is done using LMP's support for passing capabilities; when the client requests $X$ bytes of RAM, the server's memory manager will allocate at least that amount and then pass its associated capability reference in the response message. This allows the memory manager to allocate RAM and hand it out to processes while maintaining a unified view of memory usage on the system (which is required, otherwise multiple processes may erroneously make accesses to each other's memory).
+
+\subsubsection{Process Server}
+The process server handles everything to do with process management. Just like the memory server, this gives our system a single point of control for process management and thus a full view of all processes on the OS, their states, identifiers, etc. The process server supports RPCs for all functionality provided in Milestone 3 including spawning, killing, status fetching, pausing/resuming, etc. 
+
+\subsubsection{Terminal Server}
+The terminal server gives us a way to send and read characters from the terminal through RPCs. This can be useful, for example, when writing drivers for something like a UART. Standard library functions can be overridden to use our read/write RPCs (in fact, we do this) for terminal functionality.
+
+\subsection{Large Messages}
+Sometimes we may want to send a message that is larger than the size supported by LMP. For example, calls to the process server asking for a list of PIDs may be arbitrarily long. In this case, we use LMP's capability passing feature. To do this we request a frame from the memory server, fill it with the necessary arguments/return values, and then send it over the channel.
+\\\\
+While this technique works and may even seem like a clever use of capability passing, we realized in hindsight that it is not \textit{extensible}. In Milestone 6 we add support for a different transport layer called ``UMP", which cannot pass capabilities safely. A different and arguably better approach would have been to send a series of messages, each containing chunks of the data. A ``header" message would be sent first indicating that the data doesn't fit, followed by the data and a ``footer" (indicating the end).
+\\\\
+This served as an example of where doing things the ``easier" way actually turned out to cause more headaches. While on first glance passing a frame seemed like the simplest way to do things, our lack of foresight came back to bite us since we ended up having to redo our implementation in order to support other transport layers.
